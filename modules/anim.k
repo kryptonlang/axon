@@ -24,27 +24,32 @@ func _grad(i) {
     else { emit 22 }
 }
 
-func _uniTrail(c) {
-    // Trail length 5..12 per column, stable per column.
-    emit 5 + (_mix(c * 977 + 1217) % 8)
-}
-
-func _uni(c, r, f) {
-    let i = _mix(c * 131 + r * 17 + f * 7) % len(UNI_GLYPHS)
-    emit UNI_GLYPHS[i]
-}
-
-// Cheap deterministic mix — no RNG required.
-func _mix(x) {
+// Small-range deterministic mix — no RNG required.
+// IMPORTANT: the ELF backend routes arithmetic on values >= 0x400000 (4 MiB)
+// into the pointer/concat path, so every intermediate here MUST stay below
+// that threshold. Inputs are capped at ~11k, multiplier is 97 — nothing
+// exceeds ~1.7M, and all modulo() results are non-negative.
+func _uniHash(c, r, f) {
+    let x = c * 131 + r * 17 + (f % 97) * 7
     x = bitXor(x, shr(x, 13))
-    x = x * 1103515245 + 12345
+    x = x * 97
     x = bitXor(x, shr(x, 16))
     emit x
 }
 
+func _uniTrail(c) {
+    // Trail length 5..12 per column, stable per column.
+    emit 5 + (_uniHash(c, 3, 5) % 8)
+}
+
+func _uni(c, r, f) {
+    let i = _uniHash(c, r, f) % len(UNI_GLYPHS)
+    emit UNI_GLYPHS[i]
+}
+
 // Rain head row for a column moves downward with frame; classic rain feel.
 func _rainHead(c, rows, f) {
-    emit (_mix(c * 911 + f * 7) % ((rows + 12) * 2))
+    emit _uniHash(c, 9, f) % ((rows + 12) * 2)
 }
 
 // ── colormix: rotating hue gradient, rotating hue sweep ──
