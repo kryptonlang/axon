@@ -1,0 +1,29 @@
+# axon — SysV init fragment for the native Krypton display manager.
+# Not wired by default (the greeter remains a configurable boot-time choice);
+# install into /etc/init.d/, link into /etc/rc2.d/S30axon, remove getty@tty1.
+#
+# Boot order: after mountfs + network, before rc3.d/S99localnet-start-sessions.
+# The daemon logs in via /dev/tty1 and execs /bin/sh (or the session binary
+# configured in the config file) on the pty it creates.
+LAUNCHER=/usr/local/bin/axon
+PIDFILE=/run/axon.pid
+TTY=/dev/tty1
+set -eu
+case "${1:-start}" in
+    start)
+        [ -x "$LAUNCHER" ] || { echo "axon missing at $LAUNCHER" >&2; exit 1; }
+        setsid -c "$LAUNCHER" --tty=$TTY < /dev/null > /dev/null 2>&1 &
+        echo $! > "$PIDFILE"
+        ;;
+    stop)
+        [ -f "$PIDFILE" ] && kill "$(cat $PIDFILE)" 2>/dev/null || true
+        rm -f "$PIDFILE"
+        ;;
+    restart)
+        "$0" stop; "$0" start
+        ;;
+    *)
+        echo "usage: axon {start|stop|restart}" >&2
+        exit 2
+        ;;
+esac
