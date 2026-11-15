@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Brian Thompson (krypton-lang) — All Rights Reserved.
 // axon/axon.k — Axon: a native Krypton TUI display manager (Axon-style).
 //
-// Draws a full-screen built-in backdrop (colormix/matrix/blank — a builtin
+// Draws a full-screen built-in backdrop (colormix/unimatrix/blank — a builtin
 // `animation` setting), overlays a login box with a selectable session,
 // hands the tty to `su` for the password check, then spawns the chosen
 // session on a fresh pty. Deliberately self-contained: no FFI, no PAM —
@@ -118,7 +118,7 @@ func _loginScreen(cols, rows) {
         // per repaint; redrawing it every iteration is what makes input feel
         // delayed on a pty. The box redraw below is ~600 B and every key
         // lands in one iteration regardless.
-        if frame % 12 == 0 { print(colormixFrame(cols, rows, frame)) }
+        if frame % 12 == 0 { print(unimatrixFrame(cols, rows, frame)) }
         frame = frame + 1
         drawLogin(cols, rows, g_user, sess, "TAB/arrows select session · Enter logs in")
         // Drain ALL pending input bytes, not just one — an 8-15 fps frame

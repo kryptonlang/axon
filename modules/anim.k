@@ -10,7 +10,29 @@ module axon_anim
 
 import "k:ansi"
 
-let GLYPHS = "0123456789ABCDEFGHIJKLMNPQRSTUVWXYZ$#@%&"
+// Unimatrix-style glyph alphabet. Krypton strings are byte-indexed, so
+// multibyte unicode (katakana/hangul/etc.) can't be selected this way —
+// the dense mixed-case/symbol mix approximates unimatrix's printable set.
+let UNI_GLYPHS = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!@#$%&*+=/\\|?<>^~"
+
+// Glow ramp for the unimatrix tail: bright → dark green (xterm 256 palette).
+func _grad(i) {
+    if i <= 0 { emit 46 }
+    else if i == 1 { emit 40 }
+    else if i == 2 { emit 34 }
+    else if i == 3 { emit 28 }
+    else { emit 22 }
+}
+
+func _uniTrail(c) {
+    // Trail length 5..12 per column, stable per column.
+    emit 5 + (_mix(c * 977 + 1217) % 8)
+}
+
+func _uni(c, r, f) {
+    let i = _mix(c * 131 + r * 17 + f * 7) % len(UNI_GLYPHS)
+    emit UNI_GLYPHS[i]
+}
 
 // Cheap deterministic mix — no RNG required.
 func _mix(x) {
@@ -20,14 +42,9 @@ func _mix(x) {
     emit x
 }
 
-// Rain head row for a column moves downward with frame; classic matrix feel.
+// Rain head row for a column moves downward with frame; classic rain feel.
 func _rainHead(c, rows, f) {
     emit (_mix(c * 911 + f * 7) % ((rows + 12) * 2))
-}
-
-func _glyph(c, r, f) {
-    let i = _mix(c * 31 + r * 17 + f * 13) % len(GLYPHS)
-    emit GLYPHS[i]
 }
 
 // ── colormix: rotating hue gradient, rotating hue sweep ──
@@ -63,21 +80,26 @@ func colormixFrame(cols, rows, f) {
     emit sb
 }
 
-// ── matrix: bright head + fading trail per column ───────────────────────────
-func matrixFrame(cols, rows, f) {
+// ── unimatrix: glowing head + fading green tail, dense glyph mix ──────────
+// Homepage look of will8211's unimatrix: a bright (near-white) falling head,
+// a 256-color green glow ramp on the trail, per-column trail lengths, and
+// sparkle — glyphs change every frame instead of being static columns.
+func unimatrixFrame(cols, rows, f) {
     let sb = cursorHome()
     let row = 0
     while row < rows {
         let col = 0
         while col < cols {
             let head = _rainHead(col, rows, f)
+            let tl = _uniTrail(col)
             let d = head - row
             if d == 0 {
-                sb = sb + brightGreen(_glyph(col, row, f))
-            } else if d > 0 && d <= 4 {
-                sb = sb + green(_glyph(col, row, f))
-            } else if d > 4 && d <= 12 {
-                sb = sb + gray(_glyph(col, row, f))
+                sb = sb + bold(color256(231, _uni(col, row, f)))
+            } else if d > 0 && d <= 5 {
+                sb = sb + color256(_grad(d - 1), _uni(col, row, f))
+            } else if d > 5 && d <= tl {
+                // Fade into the darker tail — dimmer than the ramp.
+                sb = sb + color256(22, _uni(col, row, f))
             } else {
                 sb = sb + " "
             }
