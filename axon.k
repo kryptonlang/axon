@@ -113,7 +113,7 @@ func _loginScreen(cols, rows) {
     let frame = 0
     let sess = _sessName(g_sessIdx)
     let done = -1
-    while done == -1 {
+    while done < 1 {
         // Full-screen backdrop only on a slow cadence — it's ~30 KB of ANSI
         // per repaint; redrawing it every iteration is what makes input feel
         // delayed on a pty. The box redraw below is ~600 B and every key
@@ -130,7 +130,9 @@ func _loginScreen(cols, rows) {
             any = 1
             let off = 0
             while off < n {
-                if done == -1 { done = _key(toInt(bufGetByte(b, off))) }
+                // done: 0=normal byte, 1=submit, 2=Ctrl-C (-1 = not started).
+                // _key returns 0 for regular bytes — keep draining until a decision.
+                if done < 1 { done = _key(toInt(bufGetByte(b, off))) }
                 off = off + 1
             }
             n = fdReadN(0, b, 16)
@@ -159,37 +161,48 @@ just run {
     let cols = _colsOf(ws)
     let rows = _rowsOf(ws)
 
-    let done = _loginScreen(cols, rows)
-    termRestore(0, saved)
-    showCursor()
+    // Display-manager loop: keep offering login forever — a DM never exits
+    // just because one session ended. Returns here after every logout.
+    while 1 == 1 {
+        g_user = ""
+        g_esc = 0
+        g_sessIdx = 0
+        hideCursor()
 
-    if done == 2 {          // Ctrl-C
+        let done = _loginScreen(cols, rows)
+        termRestore(0, saved)
+        showCursor()
+
+        if done == 2 {          // Ctrl-C: leave the greeter (service stops/respawns by design)
+            print("")
+            exit("0")
+        }
+        if g_user == "" {
+            print("")
+            termPolling(0, saved)   // re-arm polling for the next iteration
+            continue
+        }
+
+        hideCursor()
+        print(ansiClear())
+        print("axon: handing off to `su` for " + g_user + "...")
+        showCursor()
+        let rc = authVerify(g_user)
+        showCursor()
+        if rc != 0 {
+            print("Authentication failed.")
+            termPolling(0, saved)   // re-arm before going back to the login screen
+            continue
+        }
+
+        print("Starting " + _sessName(g_sessIdx) + "...")
+        termRaw(0)
+        hideCursor()
+        sessionStart(_sessCmd(g_sessIdx))
+        termRestore(0, saved)
+        showCursor()
         print("")
-        exit("0")
+        print("Session ended — back to login.")
+        termPolling(0, saved)   // re-arm for the next login screen
     }
-    if g_user == "" {
-        print("")
-        exit("0")
-    }
-
-    hideCursor()
-    print(ansiClear())
-    print("axon: handing off to `su` for" + g_user + "...")
-    showCursor()
-    let rc = authVerify(g_user)
-    showCursor()
-    if rc != 0 {
-        print("Authentication failed.")
-        exit("1")
-    }
-
-    print("Starting " + _sessName(g_sessIdx) + "...")
-    termRaw(0)
-    hideCursor()
-    sessionStart(_sessCmd(g_sessIdx))
-    termRestore(0, saved)
-    showCursor()
-    print("")
-    print("Session ended. Goodbye.")
-    exit("0")
 }

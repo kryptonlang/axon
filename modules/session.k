@@ -23,10 +23,16 @@ func sessionStart(prog) {
         let outN = fdReadN(master, oBuf, 4096)
         if outN > 0 {
             fdWrite(1, oBuf, outN)
+        } else if outN < 0 {
+            // EIO — the spawned shell closed its end (exit). Stop pumping.
+            running = 0
         }
         if procAlive(pid) == 0 { running = 0 }
         if inN <= 0 && outN <= 0 { sleepUs(0, 20000) }
     }
+    // Reap the child so it doesn't linger as a zombie (kill(pid,0) returns
+    // success forever for zombies, which is what hung the pump).
+    waitChild(pid)
     fdClose(master)
     emit 0
 }
