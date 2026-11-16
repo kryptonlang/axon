@@ -1,0 +1,192 @@
+#!/usr/bin/python3 -I
+"""Linux-PAM adapter for the static Krypton ELF backend."""
+
+import ctypes as C
+import os
+import pwd
+import signal
+import subprocess
+import sys
+import termios
+
+# Linux-PAM security/_pam_types.h
+PAM_USER, PAM_TTY = 2, 3
+PAM_NEW_AUTHTOK_REQD = 12
+PAM_DISALLOW_NULL_AUTHTOK = 1
+PAM_ESTABLISH_CRED, PAM_DELETE_CRED = 2, 4
+PAM_CHANGE_EXPIRED_AUTHTOK = 32
+
+
+class Conversation(C.Structure):
+    _fields_ = [("conv", C.c_void_p), ("appdata", C.c_void_p)]
+
+
+class PamError(Exception):
+    def __init__(self, stage, status):
+        super().__init__(f"{stage} failed (PAM status {status})")
+        self.status = status
+
+
+def bind(library, name, result, *args):
+    fn = getattr(library, name)
+    fn.argtypes = args
+    fn.restype = result
+    return fn
+
+
+def run_session(username, mode, tty, session_command=None):
+    pam = C.CDLL("libpam.so.0")
+    misc = C.CDLL("libpam_misc.so.0")
+    libc = C.CDLL("libc.so.6")
+    ptr, integer, string = C.c_void_p, C.c_int, C.c_char_p
+    free = bind(libc, "free", None, ptr)
+    handle = ptr()
+    conv = Conversation(C.cast(misc.misc_conv, ptr), None)
+
+    def check(stage, status):
+        if status:
+            raise PamError(stage, status)
+
+    start = bind(pam, "pam_start", integer, string, string,
+                 C.POINTER(Conversation), C.POINTER(ptr))
+    end = bind(pam, "pam_end", integer, ptr, integer)
+    set_item = bind(pam, "pam_set_item", integer, ptr, integer, string)
+    get_item = bind(pam, "pam_get_item", integer, ptr, integer, C.POINTER(string))
+    putenv = bind(pam, "pam_putenv", integer, ptr, string)
+    getenvlist = bind(pam, "pam_getenvlist", C.POINTER(ptr), ptr)
+    setcred = bind(pam, "pam_setcred", integer, ptr, integer)
+    close_session = bind(pam, "pam_close_session", integer, ptr, integer)
+
+    check("pam_start", start(b"axon", os.fsencode(username), C.byref(conv), C.byref(handle)))
+    credentials = opened = False
+    status = 0
+    try:
+        check("pam_set_item", set_item(handle, PAM_TTY, os.fsencode(tty)))
+        session_type = "tty" if mode == "tty" else "wayland"
+        check("pam_putenv", putenv(handle, f"XDG_SESSION_TYPE={session_type}".encode()))
+        if tty.startswith("/dev/tty") and tty[8:].isdigit():
+            check("pam_putenv", putenv(handle, b"XDG_VTNR=" + os.fsencode(tty[8:])))
+
+        authenticate = bind(pam, "pam_authenticate", integer, ptr, integer)
+        account = bind(pam, "pam_acct_mgmt", integer, ptr, integer)
+        check("Authentication", authenticate(handle, PAM_DISALLOW_NULL_AUTHTOK))
+        account_status = account(handle, PAM_DISALLOW_NULL_AUTHTOK)
+        if account_status == PAM_NEW_AUTHTOK_REQD:
+            change = bind(pam, "pam_chauthtok", integer, ptr, integer)
+            check("Password change", change(handle, PAM_CHANGE_EXPIRED_AUTHTOK))
+        else:
+            check("Account check", account_status)
+
+        authenticated = string()
+        check("pam_get_item", get_item(handle, PAM_USER, C.byref(authenticated)))
+        if not authenticated.value:
+            raise ValueError("PAM returned no account")
+        user = pwd.getpwnam(os.fsdecode(authenticated.value))
+        groups = os.getgrouplist(user.pw_name, user.pw_gid)
+        shell = user.pw_shell or "/bin/sh"
+        if mode == "tty":
+            program, argv = shell, ["-" + os.path.basename(shell)]
+        elif session_command:
+            # Session command from the .desktop entry; must exist and be
+            # executable, and runs as the authenticated account like ly.
+            if not os.path.isfile(session_command) or not os.access(session_command, os.X_OK):
+                raise ValueError(f"session command is not executable: {session_command}")
+            program, argv = session_command, [session_command]
+        elif os.access("/usr/bin/start-hypr", os.X_OK):
+            program, argv = "/usr/bin/start-hypr", ["/usr/bin/start-hypr"]
+        else:
+            program, argv = "/usr/bin/Hyprland", ["/usr/bin/Hyprland"]
+
+        check("pam_setcred", setcred(handle, PAM_ESTABLISH_CRED))
+        credentials = True
+        open_session = bind(pam, "pam_open_session", integer, ptr, integer)
+        check("pam_open_session", open_session(handle, 0))
+        opened = True
+
+        # Start with a clean environment; PAM can supply session variables.
+        env = {"PATH": "/usr/bin:/bin", "TERM": os.environ.get("TERM", "linux"),
+               "XDG_SESSION_TYPE": session_type}
+        entries = getenvlist(handle)
+        if entries:
+            i = 0
+            try:
+                while entries[i]:
+                    entry = entries[i]
+                    i += 1
+                    try:
+                        key, sep, value = os.fsdecode(C.string_at(entry)).partition("=")
+                        if sep and key:
+                            env[key] = value
+                    finally:
+                        free(entry)
+            finally:
+                while entries[i]:
+                    free(entries[i])
+                    i += 1
+                free(C.cast(entries, ptr))
+        env.update(HOME=user.pw_dir, USER=user.pw_name, LOGNAME=user.pw_name, SHELL=shell)
+        result = subprocess.run(argv, executable=program, env=env, cwd=user.pw_dir,
+                                user=user.pw_uid, group=user.pw_gid, extra_groups=groups)
+        if result.returncode:
+            print(f"axon: session exited with status {result.returncode}", file=sys.stderr)
+    except PamError as error:
+        status = error.status
+        raise
+    finally:
+        if opened:
+            rc = close_session(handle, 0)
+            if rc:
+                print(f"axon: pam_close_session failed ({rc})", file=sys.stderr)
+                status = status or rc
+        if credentials:
+            rc = setcred(handle, PAM_DELETE_CRED)
+            if rc:
+                print(f"axon: could not delete PAM credentials ({rc})", file=sys.stderr)
+                status = status or rc
+        end(handle, status)
+
+
+def main():
+    if len(sys.argv) not in (3, 4) or not sys.argv[1] or sys.argv[2] not in ("tty", "wayland"):
+        raise ValueError("expected a username, tty or wayland, and optional session command")
+    if len(sys.argv) == 4 and not sys.argv[3]:
+        raise ValueError("session command must not be empty")
+    if os.getuid() != 0 or os.geteuid() != 0:
+        raise ValueError("the greeter must run as root")
+    if not os.path.isfile("/etc/pam.d/axon"):
+        raise ValueError("missing /etc/pam.d/axon")
+    # Use the actual foreground VT for PAM prompts and the user session.
+    fd = 0
+    tty = os.ttyname(fd)
+    previous = os.tcgetpgrp(fd)
+    if previous != os.getpgrp():
+        raise ValueError("greeter is not on the foreground terminal")
+    saved = termios.tcgetattr(fd)
+    old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTTOU})
+    try:
+        os.setpgid(0, 0)
+        os.tcsetpgrp(fd, os.getpgrp())
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
+    # Ctrl-C can cancel a PAM prompt. While a session runs, subprocess.run
+    # waits for the client; interactive shells do their own tty job control.
+    try:
+        run_session(sys.argv[1], sys.argv[2], tty,
+                    sys.argv[3] if len(sys.argv) == 4 else None)
+    finally:
+        signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTTOU})
+        try:
+            os.tcsetpgrp(fd, previous)
+            termios.tcsetattr(fd, termios.TCSAFLUSH, saved)
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(1)
+    except (OSError, ValueError, KeyError, PamError) as error:
+        print(f"axon: {error}", file=sys.stderr)
+        sys.exit(1)

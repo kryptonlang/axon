@@ -3,50 +3,81 @@
 //
 // Draws a full-screen built-in backdrop (colormix/unimatrix/blank — a builtin
 // `animation` setting), overlays a login box with a selectable session,
-// hands the tty to `su` for the password check, then spawns the chosen
-// session on a fresh pty. Deliberately self-contained: no FFI, no PAM —
-// credential crypto stays with su until Phase VII lands the FFI.
+// then hands the foreground terminal to a PAM-backed session launcher.
 //
 // Build + run on Linux:
 //   KRYPTON_ROOT=<krypton> kcc_driver_linux_x86_64 axon.k -o /tmp/axon
 //   /tmp/axon
 //
 // Keys: printable type the user; TAB / ← → cycle sessions; ENTER logs in;
-// Ctrl-C quits. Empty username prints the back-exit path.
+// Ctrl-C quits. Empty usernames are ignored.
 
 import "k:ansi"
 import "k:termios"
 import "modules/auth.k"
 import "modules/ui.k"
-import "modules/session.k"
 import "modules/anim.k"
+import "modules/sessions.k"
 
-let sessName0 = "TTY (sh)"
-let sessCmd0  = "/bin/sh"
-let sessName1 = ""
-let sessCmd1  = ""
+// Backdrop animation: unimatrix (default), colormix, or blank. Override in
+// /etc/axon/config with a line like:  animation=colormix
+let g_anim = "unimatrix"
 
 func _buildSessions() {
-    if shellRun("test -x /usr/bin/Hyprland && echo 1 || echo 0") == "1" {
-        sessName1 = "Hyprland"
-        sessCmd1  = "/usr/bin/Hyprland"
-    }
+    buildSessions()
     emit 0
 }
 
 func _sessCount() {
-    if sessName1 == "" { emit 1 }
-    emit 2
+    emit sessionCount()
 }
 
 func _sessName(i) {
-    if i == 0 { emit sessName0 }
-    emit sessName1
+    emit sessionName(i)
 }
 
-func _sessCmd(i) {
-    if i == 0 { emit sessCmd0 }
-    emit sessCmd1
+func _sessMode(i) {
+    if len(sessionExec(i)) == 0 { emit "tty" }
+    emit "wayland"
+}
+
+func _backdropFrame(cols, rows, f) {
+    if g_anim == "colormix" { emit colormixFrame(cols, rows, f) }
+    else if g_anim == "blank" { emit blankFrame(cols, rows, f) }
+    emit unimatrixFrame(cols, rows, f)
+}
+
+func _trimTail(s) {
+    let end = len(s)
+    while end > 0 {
+        let c = s[end - 1]
+        if c == " " || c == "\t" || c == "\r" || c == "\n" {
+            end = end - 1
+        } else {
+            break
+        }
+    }
+    emit substring(s, 0, end)
+}
+
+func _readBackdrop() {
+    let cfg = shellRun("cat /etc/axon/config 2>/dev/null")
+    if len(cfg) == 0 { emit 0 }
+    let total = lineCount(cfg)
+    let i = 0
+    while i < total {
+        let line = getLine(cfg, i)
+        if len(line) >= 10 {
+            if substring(line, 0, 10) == "animation=" {
+                let v = _trimTail(substring(line, 10, len(line)))
+                if v == "colormix" || v == "unimatrix" || v == "blank" {
+                    g_anim = v
+                }
+            }
+        }
+        i = i + 1
+    }
+    emit 0
 }
 
 func _colsOf(s) {
@@ -109,18 +140,17 @@ func _key(c) {
     emit 0
 }
 
-func _loginScreen(cols, rows) {
+func _loginScreen(cols, rows, message) {
     let frame = 0
-    let sess = _sessName(g_sessIdx)
     let done = -1
     while done < 1 {
         // Full-screen backdrop only on a slow cadence — it's ~30 KB of ANSI
         // per repaint; redrawing it every iteration is what makes input feel
         // delayed on a pty. The box redraw below is ~600 B and every key
         // lands in one iteration regardless.
-        if frame % 12 == 0 { print(unimatrixFrame(cols, rows, frame)) }
+        if frame % 12 == 0 { print(_backdropFrame(cols, rows, frame)) }
         frame = frame + 1
-        drawLogin(cols, rows, g_user, sess, "TAB/arrows select session · Enter logs in")
+        drawLogin(cols, rows, g_user, _sessName(g_sessIdx), message)
         // Drain ALL pending input bytes, not just one — an 8-15 fps frame
         // cap would otherwise swallow keystrokes one at a time.
         let b = bufNew(16)
@@ -148,6 +178,7 @@ just run {
         exit("1")
     }
     _buildSessions()
+    _readBackdrop()
     hideCursor()
     clearScrollback()
     let saved = termRaw(0)
@@ -163,13 +194,14 @@ just run {
 
     // Display-manager loop: keep offering login forever — a DM never exits
     // just because one session ended. Returns here after every logout.
+    let message = "TAB/arrows select session · Enter logs in"
     while 1 == 1 {
         g_user = ""
         g_esc = 0
         g_sessIdx = 0
         hideCursor()
 
-        let done = _loginScreen(cols, rows)
+        let done = _loginScreen(cols, rows, message)
         termRestore(0, saved)
         showCursor()
 
@@ -183,26 +215,15 @@ just run {
             continue
         }
 
-        hideCursor()
         print(ansiClear())
-        print("axon: handing off to `su` for " + g_user + "...")
-        showCursor()
-        let rc = authVerify(g_user)
-        showCursor()
-        if rc != 0 {
-            print("Authentication failed.")
-            termPolling(0, saved)   // re-arm before going back to the login screen
-            continue
-        }
-
-        print("Starting " + _sessName(g_sessIdx) + "...")
-        termRaw(0)
-        hideCursor()
-        sessionStart(_sessCmd(g_sessIdx))
+        print("Sign in to " + _sessName(g_sessIdx))
+        let rc = authSession(g_user, _sessMode(g_sessIdx), sessionExec(g_sessIdx))
         termRestore(0, saved)
-        showCursor()
-        print("")
-        print("Session ended — back to login.")
-        termPolling(0, saved)   // re-arm for the next login screen
+        if rc == 0 {
+            message = "Session ended · Enter logs in"
+        } else {
+            message = "Sign-in failed · Enter to retry"
+        }
+        termPolling(0, saved)
     }
 }

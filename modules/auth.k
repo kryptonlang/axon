@@ -1,15 +1,7 @@
 // Copyright 2026 The Krypton Authors.
 // Licensed under the Apache License, Version 2.0 (see LICENSE or
 // http://www.apache.org/licenses/LICENSE-2.0).
-// auth.k — credential check for axon.
-//
-// v1 strategy: hand the tty over to `su`; it prints its own "Password:"
-// prompt, reads (and hides) the password itself, and answers with an exit
-// status. The greeter never sees the password — this is deliberately
-// password-free in Krypton code until stdlib grows a SHA-512 crypt and
-// the PAM/libcrypt FFI (Phase VII) lands.
-//
-// Contract:  exit code 0 = login accepted, anything else = rejected.
+// PAM owns both credential verification and the lifetime of the session.
 
 module greeter_auth
 
@@ -27,9 +19,9 @@ func shellQuote(s) {
     emit out
 }
 
-// verify(user) -> su's exit code (0 on success).
-// Runs with inherited stdio so su reads/prints directly on the tty.
-func authVerify(user) {
-    let rc = shellRun("su - " + shellQuote(user) + " -s /bin/sh -c true")
-    emit toInt(rc)
+func authSession(user, mode, sessionExec) {
+    if len(sessionExec) > 0 {
+        emit toInt(shellRun("exec /usr/bin/python3 -I /usr/local/libexec/axon-pam " + shellQuote(user) + " " + shellQuote(mode) + " " + shellQuote(sessionExec)))
+    }
+    emit toInt(shellRun("exec /usr/bin/python3 -I /usr/local/libexec/axon-pam " + shellQuote(user) + " " + shellQuote(mode)))
 }

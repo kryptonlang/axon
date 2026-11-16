@@ -1,0 +1,6 @@
+#%PAM-1.0
+# KryptOS builds Linux-PAM without a distribution login stack or systemd.
+auth      required  pam_unix.so
+account   required  pam_unix.so
+password  required  pam_unix.so
+session   required  pam_unix.so
