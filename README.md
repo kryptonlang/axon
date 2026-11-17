@@ -35,11 +35,39 @@ for the login flow and current limits.
 The greeter always offers "Login shell" (a tty login for the authenticated
 account) plus one entry per freedesktop session in
 `/usr/share/wayland-sessions/*.desktop` that has both `Name=` and `Exec=`,
-like ly. `Exec=` field codes (`%U`, `%f`, …) are stripped. KryptOS ships
-`kryptos-hyprland.desktop` (`Exec=/usr/bin/start-hypr`).
+like ly. Entries with `Hidden=true` or `NoDisplay=true` (case-insensitive)
+are skipped, and `TryExec=` is honored: the entry is hidden when its binary
+is missing. `Exec=` runs through `/bin/sh -c`, so commands with arguments,
+env prefixes, or redirects work as the freedesktop spec expects; field
+codes (`%U`, `%f`, …) are stripped. KryptOS ships
+`kryptos-hyprland.desktop` (`Exec=/usr/bin/start-hypr`, `DesktopNames=Hyprland`).
+
+The session receives `XDG_SESSION_TYPE=wayland|tty`, the `DesktopNames`
+(first entry) as `XDG_CURRENT_DESKTOP` and `XDG_SESSION_DESKTOP`, plus
+`XDG_VTNR` on tty session launches — enough for xdg-desktop-portal and
+friends to pick the right backend.
 
 ## Configuration
 
 Optional `/etc/axon/config`:
 
     animation=unimatrix   # or colormix, blank
+    autologin=user        # passwordless login at boot (ly-autologin-style;
+                          # uses /etc/pam.d/axon-autologin, refuses root)
+    power_reboot=...      # override reboot command (default /sbin/reboot)
+    power_poweroff=...    # override poweroff command (default /sbin/poweroff)
+    power_suspend=...     # override suspend command (default: auto, from
+                          # /sys/power/mem_available)
+
+Autologin needs the account to exist and runs its login shell; it is
+disabled at boot and the greeter falls back to manual sign-in if the
+autologin attempt fails.
+
+## Keys
+
+    TAB / ← / →  cycle sessions
+    ENTER        log in (confirm power action in the confirm dialog)
+    Ctrl-C       quit the greeter
+    F2           reboot      (with Enter/Esc confirm)
+    F3           power off
+    F4           suspend

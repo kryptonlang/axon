@@ -7,20 +7,44 @@
 // Exec= command is handed to axon-pam as the third argument. Field codes
 // (%U, %f, …) are stripped from Exec=.
 //
-// The list is resolved once per greeter start; it is not reactive to
-// filesystem changes while the greeter is running.
+// STATE HAS TO LIVE IN A HEAP STRUCT, NOT IN MODULE-LEVEL `let`: an
+// imported module's top-level variables do not persist across calls into it
+// (verified on the Linux backend — see stdlib/wayland.k's removed wlNewId),
+// so any session list kept in module globals is silently empty at runtime.
+// buildSessions() returns the populated struct; the caller (axon.k) stores
+// it in its own main-module global and passes it to every query function.
 
 module axon_sessions
 
-let _count = 1
-let _name1 = ""
-let _exec1 = ""
-let _name2 = ""
-let _exec2 = ""
-let _name3 = ""
-let _exec3 = ""
+// sh-safe single-quoting: 'it'\''s'
+func _shellQuote(s) {
+    let out = "'"
+    let i = 0
+    while i < len(s) {
+        let c = s[i]
+        if c == "'" { out = out + "'\\''" }
+        else { out = out + c }
+        i = i + 1
+    }
+    out = out + "'"
+    emit out
+}
 
-let SESS_DIR = "/usr/share/wayland-sessions"
+// freedesktop booleans are case-insensitive; accept true / 1.
+func _isTruthy(v) {
+    let s = _trimHead(_trimTail(v))
+    let out = ""
+    let i = 0
+    while i < len(s) {
+        let c = s[i]
+        let code = charCode(c)
+        if code >= 65 && code <= 90 { out = out + fromCharCode(code + 32) }
+        else { out = out + c }
+        i = i + 1
+    }
+    if out == "true" || out == "1" { emit 1 }
+    emit 0
+}
 
 func _trimTail(s) {
     let end = len(s)
@@ -97,62 +121,110 @@ func _desktopKey(content, key) {
     emit ""
 }
 
+// freedesktop spec key: DesktopNames=a;b;c — first entry wins for
+// XDG_CURRENT_DESKTOP / XDG_SESSION_DESKTOP.
+func _firstDesktopName(v) {
+    let out = ""
+    let i = 0
+    while i < len(v) {
+        let c = v[i]
+        if c == ";" { break }
+        out = out + c
+        i = i + 1
+    }
+    emit _trimHead(_trimTail(out))
+}
+
 func buildSessions() {
-    _count = 1
-    _name1 = ""
-    _exec1 = ""
-    _name2 = ""
-    _exec2 = ""
-    _name3 = ""
-    _exec3 = ""
+    let s = structNew()
+    let count = 1
+    s = setField(s, "count", "1")
+    let SESS_DIR = "/usr/share/wayland-sessions"
+    s = setField(s, "name1", "")
+    s = setField(s, "exec1", "")
+    s = setField(s, "desk1", "")
+    s = setField(s, "name2", "")
+    s = setField(s, "exec2", "")
+    s = setField(s, "desk2", "")
+    s = setField(s, "name3", "")
+    s = setField(s, "exec3", "")
+    s = setField(s, "desk3", "")
     let entries = exec("ls -1A " + SESS_DIR + " 2>/dev/null")
     if len(entries) == 0 {
-        emit _count
+        emit s
     }
     let total = lineCount(entries)
     let i = 0
-    while i < total && _count < 4 {
+    while i < total && count < 4 {
         let f = getLine(entries, i)
         if len(f) > 8 {
             if substring(f, len(f) - 8, len(f)) == ".desktop" {
                 let content = readFile(SESS_DIR + "/" + f)
+                // freedesktop: Hidden (deleted-by-user) and NoDisplay both
+                // mean "don't show this entry in a picker".
+                if _isTruthy(_desktopKey(content, "Hidden")) == 1 {
+                    i = i + 1
+                    continue
+                }
+                if _isTruthy(_desktopKey(content, "NoDisplay")) == 1 {
+                    i = i + 1
+                    continue
+                }
+                // TryExec: skip the entry when its binary is unavailable.
+                let tryExec = _desktopKey(content, "TryExec")
+                if len(tryExec) > 0 {
+                    let found = exec("command -v " + _shellQuote(tryExec) + " 2>/dev/null")
+                    if len(_trimTail(found)) == 0 {
+                        i = i + 1
+                        continue
+                    }
+                }
                 let name = _desktopKey(content, "Name")
                 let exec = _stripFieldCodes(_desktopKey(content, "Exec"))
+                let desk = _firstDesktopName(_desktopKey(content, "DesktopNames"))
                 if len(name) > 0 && len(exec) > 0 {
-                    _count = _count + 1
-                    if _count == 2 {
-                        _name1 = name
-                        _exec1 = exec
-                    } else if _count == 3 {
-                        _name2 = name
-                        _exec2 = exec
+                    count = count + 1
+                    if count == 2 {
+                        s = setField(s, "name1", name)
+                        s = setField(s, "exec1", exec)
+                        s = setField(s, "desk1", desk)
+                    } else if count == 3 {
+                        s = setField(s, "name2", name)
+                        s = setField(s, "exec2", exec)
+                        s = setField(s, "desk2", desk)
                     } else {
-                        _name3 = name
-                        _exec3 = exec
+                        s = setField(s, "name3", name)
+                        s = setField(s, "exec3", exec)
+                        s = setField(s, "desk3", desk)
                     }
                 }
             }
         }
         i = i + 1
     }
-    emit _count
+    s = setField(s, "count", toStr(count))
+    emit s
 }
 
-func sessionCount() {
-    emit _count
+func sessionCount(s) {
+    emit toInt(getField(s, "count"))
 }
 
-func sessionName(i) {
+func sessionName(s, i) {
     if i == 0 { emit "Login shell" }
-    else if i == 1 { emit _name1 }
-    else if i == 2 { emit _name2 }
-    emit _name3
+    let k = "name" + toStr(i)
+    emit getField(s, k)
+}
+
+// Session DesktopNames (first entry); "" when the entry doesn't set it.
+func sessionDesktop(s, i) {
+    let k = "desk" + toStr(i)
+    emit getField(s, k)
 }
 
 // Session command handed to axon-pam. "" means tty login shell.
-func sessionExec(i) {
+func sessionExec(s, i) {
     if i == 0 { emit "" }
-    else if i == 1 { emit _exec1 }
-    else if i == 2 { emit _exec2 }
-    emit _exec3
+    let k = "exec" + toStr(i)
+    emit getField(s, k)
 }

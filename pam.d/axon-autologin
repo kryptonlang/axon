@@ -1,0 +1,10 @@
+#%PAM-1.0
+# Autologin profile for Axon (systemd-free equivalent of ly-autologin).
+# No password prompt — any local account can start a session without
+# authenticating. This is intentional and must only be consulted when the
+# greeter is explicitly configured for autologin (/etc/axon/config,
+# "autologin=<user>"). The greeter refuses autologin for root.
+auth       sufficient  pam_permit.so
+account    sufficient  pam_permit.so
+password   required    pam_deny.so
+session    sufficient  pam_permit.so

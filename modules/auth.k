@@ -19,8 +19,11 @@ func shellQuote(s) {
     emit out
 }
 
-func authSession(user, mode, sessionExec) {
+func authSession(user, mode, sessionExec, desktopName) {
     if len(sessionExec) > 0 {
+        if len(desktopName) > 0 {
+            emit toInt(shellRun("exec /usr/bin/python3 -I /usr/local/libexec/axon-pam " + shellQuote(user) + " " + shellQuote(mode) + " " + shellQuote(sessionExec) + " " + shellQuote(desktopName)))
+        }
         emit toInt(shellRun("exec /usr/bin/python3 -I /usr/local/libexec/axon-pam " + shellQuote(user) + " " + shellQuote(mode) + " " + shellQuote(sessionExec)))
     }
     emit toInt(shellRun("exec /usr/bin/python3 -I /usr/local/libexec/axon-pam " + shellQuote(user) + " " + shellQuote(mode)))

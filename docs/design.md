@@ -24,7 +24,15 @@ The session list contains the login shell plus one entry per freedesktop
 `.desktop` file found in `/usr/share/wayland-sessions` with both `Name=`
 and `Exec=`, ly-style; `Exec=` field codes (`%U`, `%f`, …) are stripped
 and the command is passed to `libexec/axon-pam` as an optional third
-argument. X11, autologin, and a graphical password widget are outside
+argument and run through `/bin/sh -c` (bare absolute paths are exec'd
+directly). `Name`/`Exec` from the entry drive the picker; `Hidden` and
+`NoDisplay` (case-insensitive booleans) hide the entry, and `TryExec`
+hides it when the binary is unavailable. The entry's `DesktopNames`
+(first value) is exported to the session as `XDG_CURRENT_DESKTOP` and
+`XDG_SESSION_DESKTOP` alongside `XDG_SESSION_TYPE` and `XDG_VTNR`.
+An optional `autologin=<user>` in `/etc/axon/config` logs the greeter
+in at boot without a prompt via `/etc/pam.d/axon-autologin` (pam_permit,
+ly-autologin style — enabled only by the config, never for root). X11, autologin, and a graphical password widget are outside
 this login path. An optional `/etc/axon/config` selects the backdrop
 with a single `animation=colormix|unimatrix|blank` line. KryptOS
 packaging should install the three files listed in the README before
