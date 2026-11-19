@@ -116,6 +116,9 @@ func _readConfig() {
                 if len(v) > 0 { g_powerOff = v }
             } else if k == "power_suspend" {
                 g_powerSuspend = v
+            } else if k == "save_session" {
+                if v == "off" || v == "false" || v == "0" { g_saveSession = 0 }
+                else { g_saveSession = 1 }
             } else if k == "autologin" {
                 g_autologin = v
             }
@@ -125,8 +128,44 @@ func _readConfig() {
     emit 0
 }
 
-// ── confirm-gated power menu (F2 reboot, F3 poweroff, F4 suspend) ──
+// Write the session NAME (not index — the list can reorder) to the state
+// file.  Mode 0600 via umask; the file is root-owned and never world-read.
+func _saveSession() {
+    if g_saveSession == 0 { emit 0 }
+    let q = ""
+    let s = _sessName(g_sessIdx)
+    let i = 0
+    while i < len(s) {
+        let c = s[i]
+        if c == "'" { q = q + "'\\''" }
+        else { q = q + c }
+        i = i + 1
+    }
+    exec("umask 077; printf '%s' '" + q + "' > /etc/axon/session-info")
+    emit 1
+}
 
+// Load the last-chosen session name and select its index.  No file →
+// keep the default (first non-tty session, or index 0).
+func _loadSession() {
+    let cur = exec("cat /etc/axon/session-info 2>/dev/null")
+    if len(cur) == 0 { emit 0 }
+    let saved = _trimTail(cur)
+    let n = _sessCount()
+    let i = 0
+    while i < n {
+        if _sessName(i) == saved { g_sessIdx = i; emit 1 }
+        i = i + 1
+    }
+    emit 0
+}
+
+// ly stores the last-chosen session under /etc/ly/ly-session_info and
+// pre-selects it at the next boot. Axon does the same, gated by
+// save_session = on|off (default on) in /etc/axon/config.
+let g_saveSession = 1
+
+// ── confirm-gated power menu (F2 reboot, F3 poweroff, F4 suspend) ──
 let g_power = 0            // 0=idle, 1=reboot, 2=poweroff, 3=suspend
 let g_powerReboot = "/sbin/reboot"
 let g_powerOff = "/sbin/poweroff"
@@ -243,6 +282,7 @@ func _escByte(c) {
         if c == 81 { _powerKey(1) }      // Q — F2: reboot
         else if c == 82 { _powerKey(2) } // R — F3: poweroff
         else if c == 83 { _powerKey(3) } // S — F4: suspend
+        else if c == 85 { exec("chvt 2") }   // U — F6: rescue TTY (getty on tty2)
         g_esc = 0
         emit 0
     } else if g_esc == 4 {
@@ -354,16 +394,18 @@ just run {
 
     // Display-manager loop: keep offering login forever — a DM never exits
     // just because one session ended. Returns here after every logout.
-    let message = "TAB/arrows select session · Enter logs in"
+    let message = "TAB/arrows select session · Enter logs in · F6 console"
     while 1 == 1 {
         g_user = ""
         g_esc = 0
         g_sessIdx = _defaultSess()
+        _loadSession()
         hideCursor()
 
         if len(g_autologin) > 0 {
             print("axon: autologin as " + g_autologin)
             let arc = authSession(g_autologin, "autologin", sessionExec(g_sess, g_sessIdx), sessionDesktop(g_sess, g_sessIdx))
+            _saveSession()
             _pollingMode()   // re-arm polling for the next iteration
             if arc == 0 {
                 message = "Session ended · Enter logs in"
@@ -405,6 +447,7 @@ just run {
         print(ansiClear())
         print("Sign in to " + _sessName(g_sessIdx))
         let rc = authSession(g_user, _sessMode(g_sessIdx), sessionExec(g_sess, g_sessIdx), sessionDesktop(g_sess, g_sessIdx))
+        _saveSession()
         _restoreMode()
         if rc == 0 {
             message = "Session ended · Enter logs in"
