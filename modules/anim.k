@@ -13,7 +13,7 @@ import "k:ansi"
 // Unimatrix-style glyph alphabet. Krypton strings are byte-indexed, so
 // multibyte unicode (katakana/hangul/etc.) can't be selected this way —
 // the dense mixed-case/symbol mix approximates unimatrix's printable set.
-let UNI_GLYPHS = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!@#$%&*+=/\\|?<>^~"
+
 
 // Glow ramp for the unimatrix tail: bright → dark green (xterm 256 palette).
 func _grad(i) {
@@ -31,9 +31,9 @@ func _grad(i) {
 // exceeds ~1.7M, and all modulo() results are non-negative.
 func _uniHash(c, r, f) {
     let x = c * 131 + r * 17 + (f % 97) * 7
-    x = bitXor(x, shr(x, 13))
+    x = bitXor(x, bitShr(x, 13))
     x = x * 97
-    x = bitXor(x, shr(x, 16))
+    x = bitXor(x, bitShr(x, 16))
     emit x
 }
 
@@ -43,6 +43,7 @@ func _uniTrail(c) {
 }
 
 func _uni(c, r, f) {
+    let UNI_GLYPHS = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!@#$%&*+=/\\|?<>^~"
     let i = _uniHash(c, r, f) % len(UNI_GLYPHS)
     emit UNI_GLYPHS[i]
 }

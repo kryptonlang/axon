@@ -16,9 +16,13 @@ Linux-PAM, including libpam_misc. The PAM file below is the KryptOS policy;
 on another Linux distribution, configure an explicit `axon` PAM service
 appropriate to that system.
 
-    install -Dm755 /tmp/axon /usr/bin/axon
-    install -Dm755 libexec/axon-pam /usr/local/libexec/axon-pam
-    install -Dm644 pam.d/axon /etc/pam.d/axon
+    sh scripts/install.sh /tmp/axon
+
+For an image staging root, set `DESTDIR=/path/to/root`. This installs both
+PAM profiles and preserves existing configuration and DM selection.
+KryptOS ch33-axon-dm.sh also consumes these source files directly; its
+autologin policy check now finds `pam_unix.so`. Keep Ly as the default
+until the updated image passes a physical VT login/logout trial.
 
 Use a spare physical Linux VT with no competing getty or display manager.
 Run Axon as root on the foreground controlling terminal. Keep a separate
@@ -57,11 +61,11 @@ Optional `/etc/axon/config`:
     power_reboot=...      # override reboot command (default /sbin/reboot)
     power_poweroff=...    # override poweroff command (default /sbin/poweroff)
     power_suspend=...     # override suspend command (default: auto, from
-                          # /sys/power/mem_available)
+                          # /sys/power/state)
 
-Autologin needs the account to exist and runs its login shell; it is
-disabled at boot and the greeter falls back to manual sign-in if the
-autologin attempt fails.
+Autologin runs once per greeter startup, using the selected session (or
+the login shell when no desktop is selected). Account expiry checks still
+apply. After logout or failure, the greeter requires manual sign-in.
 
 ## Keys
 
@@ -71,3 +75,18 @@ autologin attempt fails.
     F2           reboot      (with Enter/Esc confirm)
     F3           power off
     F4           suspend
+
+## Verification
+
+Portable PAM lifecycle regressions:
+
+    python3 tests/test-pam-helper.py
+
+On a Linux test VM with Python, Linux-PAM, openssl and root access, run
+real authentication and greeter tests in a temporary chroot:
+
+    sudo python3 tests/isolated-linux.py /path/to/linux-axon
+
+This checks password rejection/acceptance, the session UID, tty restoration,
+one-time autologin, desktop environment variables, and the power confirmation
+dialog. It does not exercise a real compositor, GPU, suspend, or system boot.

@@ -62,7 +62,7 @@ def run_session(username, mode, tty, session_command=None, desktop_name=None, se
     status = 0
     try:
         check("pam_set_item", set_item(handle, PAM_TTY, os.fsencode(tty)))
-        session_type = "tty" if mode == "tty" else "wayland"
+        session_type = "tty" if mode == "tty" or (mode == "autologin" and not session_command) else "wayland"
         check("pam_putenv", putenv(handle, f"XDG_SESSION_TYPE={session_type}".encode()))
         if desktop_name:
             check("pam_putenv", putenv(handle, b"XDG_CURRENT_DESKTOP=" + os.fsencode(desktop_name)))
@@ -92,7 +92,7 @@ def run_session(username, mode, tty, session_command=None, desktop_name=None, se
         # autologin selects the axon-autologin PAM profile only; the session
         # itself comes from the selected entry, exactly like the interactive
         # path. Only a tty login is always a bare login shell.
-        if mode == "tty":
+        if session_type == "tty":
             program, argv = shell, ["-" + os.path.basename(shell)]
         elif session_command:
             # freedesktop Exec= is shell-like: it may carry arguments, env
@@ -145,7 +145,7 @@ def run_session(username, mode, tty, session_command=None, desktop_name=None, se
         result = subprocess.run(argv, executable=program, env=env, cwd=user.pw_dir,
                                 user=user.pw_uid, group=user.pw_gid, extra_groups=groups)
         if result.returncode:
-            print(f"axon: session exited with status {result.returncode}", file=sys.stderr)
+            raise ValueError(f"session exited with status {result.returncode}")
     except PamError as error:
         status = error.status
         raise
@@ -160,10 +160,45 @@ def run_session(username, mode, tty, session_command=None, desktop_name=None, se
             if rc:
                 print(f"axon: could not delete PAM credentials ({rc})", file=sys.stderr)
                 status = status or rc
-        end(handle, status)
+        end_status = end(handle, status)
+        if not sys.exc_info()[0] and (status or end_status):
+            raise PamError("Session cleanup", status or end_status)
+
+
+def tty_state(action):
+    """Preserve opaque termios flags without stty's platform token parser."""
+    import json
+    import stat
+    if os.getuid() != 0 or os.geteuid() != 0:
+        raise ValueError("terminal state requires root")
+    directory = "/run/axon"
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    info = os.lstat(directory)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+        raise ValueError("unsafe /run/axon directory")
+    path = directory + "/tty-state"
+    flags = os.O_NOFOLLOW | (os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+                            if action == "--tty-save" else os.O_RDONLY)
+    fd = os.open(path, flags, 0o600)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+            raise ValueError("unsafe terminal state file")
+        if action == "--tty-save":
+            attrs = termios.tcgetattr(0)
+            attrs[6] = [v[0] if isinstance(v, bytes) else v for v in attrs[6]]
+            os.write(fd, json.dumps(attrs).encode())
+        else:
+            attrs = json.loads(os.read(fd, 4096))
+            termios.tcsetattr(0, termios.TCSAFLUSH, attrs)
+    finally:
+        os.close(fd)
 
 
 def main():
+    if len(sys.argv) == 2 and sys.argv[1] in ("--tty-save", "--tty-restore"):
+        tty_state(sys.argv[1])
+        return
     if len(sys.argv) not in (3, 4, 5) or not sys.argv[1] or sys.argv[2] not in ("tty", "wayland", "autologin"):
         raise ValueError("expected a username, tty/wayland/autologin, an optional session command, "
                          "and an optional session desktop name")

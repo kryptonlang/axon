@@ -13,6 +13,9 @@ expired-password changes, credential setup, and opening/closing the
 session. The helper uses PAM's final username, initializes the user's
 groups, and launches the selected session with that UID, GID, home,
 and PAM environment. The greeter reclaims the terminal afterward.
+The same installed Python adapter saves/restores opaque termios attributes
+in a root-owned file under /run/axon; stty selects greeter polling flags.
+Input uses fdRead, which is supported by the pinned KryptOS seed compiler.
 
 `pam.d/axon` uses the same local-account modules as the KryptOS Ly stack.
 KryptOS has no systemd or distribution-wide `login` PAM stack. The helper
@@ -31,8 +34,8 @@ hides it when the binary is unavailable. The entry's `DesktopNames`
 (first value) is exported to the session as `XDG_CURRENT_DESKTOP` and
 `XDG_SESSION_DESKTOP` alongside `XDG_SESSION_TYPE` and `XDG_VTNR`.
 An optional `autologin=<user>` in `/etc/axon/config` logs the greeter
-in at boot without a prompt via `/etc/pam.d/axon-autologin` (pam_permit,
-ly-autologin style — enabled only by the config, never for root). X11, autologin, and a graphical password widget are outside
+in at boot without a prompt via `/etc/pam.d/axon-autologin` (passwordless authentication with pam_unix account/session checks;
+enabled only by the config, once per startup, never for root). X11 and a graphical password widget are outside
 this login path. An optional `/etc/axon/config` selects the backdrop
 with a single `animation=colormix|unimatrix|blank` line. KryptOS
 packaging should install the three files listed in the README before

@@ -5,8 +5,6 @@ module axon_ui
 
 import "k:ansi"
 
-let WIDTH = 58
-let INNER = WIDTH - 2
 
 func _repeat(s, n) {
     let out = ""
@@ -18,15 +16,16 @@ func _repeat(s, n) {
     emit out
 }
 
-func _hr() { emit _repeat("-", INNER) }
+func _hr() { emit _repeat("-", 56) }
 
 func _line(s) {
+    let INNER = 56
     let pad = (INNER - len(s)) / 2
     if pad < 0 { pad = 0 }
     emit "|" + _repeat(" ", pad) + s + _repeat(" ", INNER - pad - len(s)) + "|"
 }
 
-func _lineNet(s) { emit "|" + s + _repeat(" ", INNER - len(s)) + "|" }
+func _lineNet(s) { emit "|" + s + _repeat(" ", 56 - len(s)) + "|" }
 
 func _padTo(s, n) {
     if len(s) >= n { emit substring(s, 0, n) }
@@ -37,7 +36,7 @@ func _padTo(s, n) {
 // this is ~600 bytes of ANSI per frame, not the 76 KB the full-screen frame
 // costs, so the pty buffer stays unblocked between background sweeps.
 func drawLogin(cols, rows, user, sessName, status) {
-    let left = (cols - WIDTH) / 2
+    let left = (cols - 58) / 2
     if left < 0 { left = 0 }
     let row = (rows - 11) / 2
     if row < 1 { row = 1 }

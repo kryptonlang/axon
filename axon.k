@@ -27,19 +27,20 @@ func _isTTY() {
 }
 
 func _rawMode() {
-    _savedTty = _trimTail(exec("stty -g"))
-    if len(_savedTty) == 0 { emit 0 }
-    shellRun("stty -icanon -echo -isig -ixon min 1 time 0")
+    // Save termios through Python: some stty builds cannot read their own token.
+    if shellRun("/usr/bin/python3 -I /usr/local/libexec/axon-pam --tty-save") != "0" { emit 0 }
+    _savedTty = "saved"
+    if shellRun("stty -icanon -echo -isig -ixon min 1 time 0") != "0" { emit 0 }
     emit 1
 }
 
 func _pollingMode() {
-    shellRun("stty min 0 time 0")
+    shellRun("stty -icanon -echo -isig -ixon min 0 time 0")
 }
 
 func _restoreMode() {
     if len(_savedTty) > 0 {
-        shellRun("stty " + _savedTty)
+        shellRun("/usr/bin/python3 -I /usr/local/libexec/axon-pam --tty-restore")
     }
 }
 
@@ -177,8 +178,9 @@ let g_flash = ""
 func _suspendOk() {
     if g_susok == "1" { emit 1 }
     if g_susok == "0" { emit 0 }
-    let s = exec("cat /sys/power/mem_available 2>/dev/null")
-    if indexOf(s, "deep") >= 0 || indexOf(s, "mem") >= 0 || indexOf(s, "s2idle") >= 0 {
+    if len(g_powerSuspend) > 0 { emit 1 }
+    let s = exec("cat /sys/power/state 2>/dev/null")
+    if indexOf(s, "mem") >= 0 || indexOf(s, "freeze") >= 0 {
         g_susok = "1"
         emit 1
     }
@@ -188,11 +190,10 @@ func _suspendOk() {
 
 func _suspendCmd() {
     if len(g_powerSuspend) > 0 { emit g_powerSuspend }
-    let s = exec("cat /sys/power/mem_available 2>/dev/null")
-    if indexOf(s, "deep") >= 0 { emit "echo deep > /sys/power/state" }
+    let s = exec("cat /sys/power/state 2>/dev/null")
     if indexOf(s, "mem") >= 0 { emit "echo mem > /sys/power/state" }
-    if indexOf(s, "s2idle") >= 0 { emit "echo s2idle > /sys/power/state" }
-    emit "echo mem > /sys/power/state"
+    if indexOf(s, "freeze") >= 0 { emit "echo freeze > /sys/power/state" }
+    emit "false"
 }
 
 func _powerKey(kind) {
@@ -353,19 +354,20 @@ func _loginScreen(cols, rows, message) {
         drawLogin(cols, rows, g_user, _sessName(g_sessIdx), statusMsg)
         // Drain ALL pending input bytes, not just one — an 8-15 fps frame
         // cap would otherwise swallow keystrokes one at a time.
-        let b = bufNew(16)
         let any = 0
-        let n = fdReadN(0, b, 16)
+        let chunk = fdRead(0, 16)
+        let n = len(chunk)
         while n > 0 {
             any = 1
             let off = 0
             while off < n {
                 // done: 0=normal byte, 1=submit, 2=Ctrl-C (-1 = not started).
                 // _key returns 0 for regular bytes — keep draining until a decision.
-                if done < 1 { done = _key(toInt(bufGetByte(b, off))) }
+                if done < 1 { done = _key(charCode(chunk[off])) }
                 off = off + 1
             }
-            n = fdReadN(0, b, 16)
+            chunk = fdRead(0, 16)
+            n = len(chunk)
         }
         if any == 0 { sleepUs(0, 16000) }
     }
@@ -403,8 +405,12 @@ just run {
         hideCursor()
 
         if len(g_autologin) > 0 {
-            print("axon: autologin as " + g_autologin)
-            let arc = authSession(g_autologin, "autologin", sessionExec(g_sess, g_sessIdx), sessionDesktop(g_sess, g_sessIdx))
+            let autoUser = g_autologin
+            g_autologin = ""   // once per boot, including failed launches
+            _restoreMode()
+            showCursor()
+            print("axon: autologin as " + autoUser)
+            let arc = authSession(autoUser, "autologin", sessionExec(g_sess, g_sessIdx), sessionDesktop(g_sess, g_sessIdx))
             _saveSession()
             _pollingMode()   // re-arm polling for the next iteration
             if arc == 0 {

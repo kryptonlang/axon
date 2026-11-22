@@ -21,6 +21,9 @@ What it proves:
 """
 
 import errno
+import fcntl
+import struct
+import termios
 import os
 import pty
 import pwd
@@ -48,6 +51,7 @@ PROBE_SESSION = (
 def axon_pty():
     pid, fd = pty.fork()
     if pid == 0:
+        fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 25, 80, 0, 0))
         os.execv(AXON, [AXON])
         os._exit(127)
     return pid, fd
@@ -95,10 +99,11 @@ def test_autologin():
     if os.path.exists(PROBE_OUT):
         os.remove(PROBE_OUT)
     pid, fd = axon_pty()
-    out = read_for(fd, 8, stop_when=lambda o: o.count(f"autologin as {USER}".encode()) >= 2)
-    finish(pid, fd, kill=True)  # DM re-autologins forever by design; kill it
+    out = read_for(fd, 8)
+    finish(pid, fd, kill=True)
+    assert out.count(f"autologin as {USER}".encode()) == 1, "autologin repeated after logout"
     text = out.decode(errors="replace")
-    print(text)
+    assert "stty:" not in text, text[:1200]
     assert f"autologin as {USER}".encode() in out, "autologin line never printed"
     assert b"Password:" not in out, "autologin prompted for a password"
     assert os.path.exists(PROBE_OUT), "probe session never ran"
@@ -115,6 +120,25 @@ def test_autologin():
     print("autologin OK: greeter skipped, UID drop, Wayland XDG env present")
 
 
+def test_manual_login():
+    with open(CONFIG, "w") as f:
+        f.write("")
+    pid, fd = axon_pty()
+    try:
+        out = read_for(fd, 8, stop_when=lambda o: b"TAB/arrows" in o)
+        os.write(fd, USER.encode() + b"\r")
+        prompted = read_for(fd, 8, stop_when=lambda o: b"Password:" in o)
+        assert b"Password:" in prompted, "manual login did not reach PAM"
+        os.write(fd, b"AxonTestpass-893\r")
+        returned = read_for(fd, 8, stop_when=lambda o: b"Session ended" in o)
+        assert b"Session ended" in returned, returned[-1000:]
+        assert b"AxonTestpass-893" not in returned, "password was echoed"
+        assert b"stty:" not in out + prompted + returned, "tty restore failed"
+    finally:
+        assert finish(pid, fd, kill=False) == 0
+    print("manual login OK: PAM prompt, session launch, logout, greeter exit")
+
+
 def test_power_menu():
     with open(CONFIG, "w") as f:
         f.write("")  # autologin disabled: interactive greeter
@@ -125,9 +149,9 @@ def test_power_menu():
     os.write(fd, b"\x1b")  # Esc cancels
     out += read_for(fd, 2)
     # Greeter loop exits on Ctrl-C (done==2 -> exit(0))
-    finish(pid, fd, kill=False)
+    assert finish(pid, fd, kill=False) == 0, "greeter did not exit cleanly"
     text = out.decode(errors="replace")
-    print(text)
+    assert "stty:" not in text, text[:1200]
     assert b"Reboot now? Enter = yes, Esc = cancel" in out, "F2 did not open the confirmation gate"
     print("power menu OK: F2 rendered the gate, Esc accepted (no reboot performed)")
 
@@ -141,6 +165,7 @@ def cleanup():
 
 
 test_autologin()
+test_manual_login()
 test_power_menu()
 cleanup()
 print("PASS")
